@@ -4,7 +4,14 @@ Two interactive in-browser demos that show what an image looks like reflected in
 
 **Live:** https://abobabo91.github.io/anamorph/
 
-- [`conical.html`](conical.html) — conical mirror anamorphosis with adjustable half-angle
-- [`elliptic.html`](elliptic.html) — elliptical-torus reflection with horizontal stretch factor
+## Conical mirror
+[`conical.html`](conical.html) — adjust the cone half-angle (default 87°).
+
+![Conical mirror anamorphosis](screenshots/conical.png)
+
+## Elliptical torus
+[`elliptic.html`](elliptic.html) — same idea plus a horizontal-stretch ellipse factor.
+
+![Elliptical torus reflection](screenshots/elliptic.png)
 
 Pure client-side HTML/canvas — drop an image, pan/zoom under the selection circle, watch the reflection update.
