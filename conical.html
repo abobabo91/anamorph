@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Conical Mirror Anamorphosis — Direct + Intuitive Torus Reflection</title>
+<style>
+  :root { --bg:#0f1115; --panel:#151923; --ink:#e9eefb; --sub:#a8b2d1; --accent:#4da3ff; --ring:#ff5a5f; }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:14px/1.35 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  .app{display:grid;grid-template-rows:auto 1fr;height:100%}
+  .controls{display:flex;gap:16px;align-items:center;padding:10px 12px;background:var(--panel);border-bottom:1px solid #222a3a;position:sticky;top:0;z-index:3;flex-wrap:wrap}
+  .controls label{display:flex;align-items:center;gap:8px;background:#101420;border:1px solid #1c2535;padding:8px 10px;border-radius:10px}
+  .controls input[type="range"]{width:220px}
+  .hint{color:var(--sub);font-size:12px;margin-left:auto}
+  .stage{display:grid;grid-template-columns:0.8fr 1.2fr;gap:1px;height:100%}
+  .pane{position:relative;background:#0d111a}
+  canvas{width:100%;height:100%;display:block;background:#0b0f17}
+  .pane h2{position:absolute;top:10px;left:12px;margin:0;font-size:12px;font-weight:600;color:var(--sub);letter-spacing:.03em;background:rgba(0,0,0,.35);padding:4px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.06)}
+  .overlay{position:absolute;inset:0;pointer-events:none}
+  .circle{position:absolute;border:2px dashed var(--ring);border-radius:50%;left:50%;top:50%;transform:translate(-50%,-50%)}
+  .ghostText{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);color:var(--sub);font-size:12px;background:rgba(0,0,0,.3);padding:4px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.06)}
+  .file{display:inline-flex;align-items:center;gap:8px;border:1px dashed #34405a;background:#0e1421;padding:8px 10px;border-radius:10px}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="controls">
+    <label class="file">
+      <input type="file" id="file" accept="image/*" />
+      <span>Drop / choose image…</span>
+    </label>
+
+    <label>
+      Degree (cone half-angle)
+      <input type="range" id="deg" min="45" max="89" step="0.1" value="60">
+      <span id="degv">60.0°</span>
+    </label>
+
+    <label>
+      <input type="checkbox" id="showDirect" checked>
+      Show direct image
+    </label>
+
+    <label>
+      Zoom
+      <input type="range" id="zoom" min="0.1" max="5" step="0.01" value="1">
+      <span id="zoomv">1.00×</span>
+    </label>
+
+    <span class="hint">Drag = pan · Wheel = zoom · Edge circle = “desired view”</span>
+  </div>
+
+  <div class="stage">
+    <div class="pane" id="leftPane">
+      <h2>Source · view window</h2>
+      <canvas id="left"></canvas>
+      <div class="overlay">
+        <div class="circle" id="selCircle"></div>
+        <div class="ghostText">Pan & zoom the image under the circle</div>
+      </div>
+    </div>
+    <div class="pane" id="rightPane">
+      <h2>Direct circle + torus reflection</h2>
+      <canvas id="right"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const fileEl  = document.getElementById('file');
+  const left    = document.getElementById('left');
+  const right   = document.getElementById('right');
+  const leftPane= document.getElementById('leftPane');
+  const rightPane= document.getElementById('rightPane');
+  const selCircle = document.getElementById('selCircle');
+  const degEl   = document.getElementById('deg');
+  const degVal  = document.getElementById('degv');
+  const showDirectEl = document.getElementById('showDirect');
+  const zoomEl  = document.getElementById('zoom');
+  const zoomVal = document.getElementById('zoomv');
+
+  function fitCanvasTo(parent, canvas){
+    const w = parent.clientWidth, h = parent.clientHeight;
+    canvas.width  = w;
+    canvas.height = h;
+    return canvas.getContext('2d', { willReadFrequently:true });
+  }
+  let lctx = fitCanvasTo(leftPane, left);
+  let rctx = fitCanvasTo(rightPane, right);
+
+  let img = null, srcCanvas = null, srcCtx = null, srcData = null;
+  function prepareSourceBuffer(){
+    if(!img) return;
+    srcCanvas = document.createElement('canvas');
+    srcCanvas.width = img.naturalWidth; srcCanvas.height = img.naturalHeight;
+    srcCtx = srcCanvas.getContext('2d');
+    srcCtx.drawImage(img, 0, 0);
+    srcData = srcCtx.getImageData(0,0,srcCanvas.width,srcCanvas.height).data;
+  }
+
+  const view = { baseScale:1, zoom:1, panX:0, panY:0 };
+  function resetViewToFit(){
+    if(!img) return;
+    const w = left.clientWidth, h = left.clientHeight;
+    const s = Math.min(w / img.naturalWidth, h / img.naturalHeight);
+    view.baseScale = s; view.zoom = 1; view.panX = 0; view.panY = 0;
+    zoomEl.value = view.zoom.toFixed(2);
+    zoomVal.textContent = view.zoom.toFixed(2) + '×';
+  }
+  function currentScale(){ return view.baseScale * view.zoom; }
+  function imageTopLeftOnCanvas(){
+    const cx = left.clientWidth/2, cy = left.clientHeight/2;
+    const s = currentScale();
+    return [ cx - (img.naturalWidth*s)/2 + view.panX,
+             cy - (img.naturalHeight*s)/2 + view.panY ];
+  }
+
+  function selectionRadiusPx(){ return 0.38 * Math.min(left.clientWidth, left.clientHeight); }
+  function layoutSelectionCircle(){
+    const r = selectionRadiusPx();
+    selCircle.style.width  = (2*r) + 'px';
+    selCircle.style.height = (2*r) + 'px';
+  }
+
+  function getParams(){
+    let betaDeg = parseFloat(degEl.value);
+    if (Math.abs(betaDeg - 45) < 0.05) betaDeg = betaDeg < 45 ? 44.95 : 45.05;
+    return { betaDeg };
+  }
+
+  function drawLeft(){
+    lctx.clearRect(0,0,left.width, left.height);
+    if(!img) return;
+    const [x0, y0] = imageTopLeftOnCanvas();
+    const s = currentScale();
+    lctx.drawImage(img, x0, y0, img.naturalWidth*s, img.naturalHeight*s);
+    const cx = left.width/2, cy = left.height/2;
+    const r = selectionRadiusPx();
+    lctx.strokeStyle = 'rgba(255,90,95,0.9)';
+    lctx.lineWidth = 2;
+    lctx.setLineDash([6,6]);
+    lctx.beginPath();
+    lctx.arc(cx, cy, r, 0, Math.PI*2);
+    lctx.stroke();
+  }
+
+  function drawRight(){
+    const W = right.width, H = right.height;
+    rctx.clearRect(0,0,W,H);
+    if(!img || !srcData) return;
+    const { betaDeg } = getParams();
+    const cx = W/2, cy = H/2;
+
+    const selCx = left.width/2, selCy = left.height/2;
+    const selR = selectionRadiusPx();
+    const sScale = currentScale();
+    const [imgX0, imgY0] = imageTopLeftOnCanvas();
+
+    const off = document.createElement('canvas');
+    off.width = W; off.height = H;
+    const offCtx = off.getContext('2d');
+    const imgData = offCtx.createImageData(W,H);
+    const buf = imgData.data;
+
+    const k = 0.1 + 0.9 * ((betaDeg - 45) / (89 - 45));
+    const outerR = 0.48 * Math.min(W,H);
+    const innerR = outerR * (1 - 0.6 * k);
+    const directR = innerR;
+
+    for (let y=0;y<H;y++){
+      const dy=y-cy;
+      for (let x=0;x<W;x++){
+        const dx=x-cx;
+        const ro=Math.hypot(dx,dy);
+        const id=(y*W+x)*4;
+        let r=12,g=16,b=26,a=255;
+
+        if (showDirectEl.checked && ro<=directR){
+          const rin = (ro/directR) * selR;
+          const Rlen=ro||1;
+          const cosφ=dx/Rlen,sinφ=dy/Rlen;
+          const lx=selCx+rin*cosφ;
+          const ly=selCy+rin*sinφ;
+          const xi=(lx-imgX0)/sScale;
+          const yi=(ly-imgY0)/sScale;
+          if (xi>=0&&yi>=0&&xi<img.naturalWidth&&yi<img.naturalHeight){
+            const px=(xi|0),py=(yi|0);
+            const sidx=(py*img.naturalWidth+px)*4;
+            r=srcData[sidx]; g=srcData[sidx+1]; b=srcData[sidx+2]; a=255;
+          }
+        } else if (ro>=innerR && ro<=outerR){
+          const u=(ro-innerR)/(outerR-innerR);
+          const rin=(1-u)*selR;
+          const Rlen=ro||1;
+          const cosφ=dx/Rlen,sinφ=dy/Rlen;
+          const lx=selCx+rin*cosφ;
+          const ly=selCy+rin*sinφ;
+          const xi=(lx-imgX0)/sScale;
+          const yi=(ly-imgY0)/sScale;
+          if (xi>=0&&yi>=0&&xi<img.naturalWidth&&yi<img.naturalHeight){
+            const px=(xi|0),py=(yi|0);
+            const sidx=(py*img.naturalWidth+px)*4;
+            r=srcData[sidx]; g=srcData[sidx+1]; b=srcData[sidx+2]; a=255;
+          }
+        }
+        buf[id]=r; buf[id+1]=g; buf[id+2]=b; buf[id+3]=a;
+      }
+    }
+    offCtx.putImageData(imgData,0,0);
+    rctx.drawImage(off,0,0,W,H);
+
+    rctx.save();
+    rctx.strokeStyle='black';
+    rctx.lineWidth=2;
+    rctx.setLineDash([6,6]);
+    rctx.beginPath(); rctx.arc(cx, cy, innerR, 0, Math.PI*2); rctx.stroke();
+    rctx.beginPath(); rctx.arc(cx, cy, outerR, 0, Math.PI*2); rctx.stroke();
+    rctx.restore();
+
+    rctx.fillStyle='rgba(255,255,255,0.08)';
+    rctx.font='600 11px ui-sans-serif, system-ui';
+    rctx.fillText(`β ≈ ${betaDeg.toFixed(1)}°`,10,H-10);
+  }
+
+  function drawAll(){drawLeft();drawRight();}
+
+  fileEl.addEventListener('change',e=>{
+    const f=e.target.files&&e.target.files[0];
+    if(!f) return;
+    const url=URL.createObjectURL(f);
+    const im=new Image();
+    im.onload=()=>{ img=im; prepareSourceBuffer(); resetViewToFit(); drawAll(); URL.revokeObjectURL(url); };
+    im.src=url;
+  });
+
+  // ---- Pan & Zoom ----
+  let dragging=false,lastX=0,lastY=0;
+  left.addEventListener('mousedown',e=>{
+    dragging=true; lastX=e.offsetX; lastY=e.offsetY; left.style.cursor='grabbing';
+  });
+  window.addEventListener('mouseup',()=>{dragging=false; left.style.cursor='default';});
+  window.addEventListener('mousemove',e=>{
+    if(!dragging) return;
+    const rect=left.getBoundingClientRect();
+    const x=e.clientX-rect.left, y=e.clientY-rect.top;
+    view.panX += (x-lastX);
+    view.panY += (y-lastY);
+    lastX=x; lastY=y;
+    drawAll();
+  });
+  left.addEventListener('wheel',e=>{
+    e.preventDefault();
+    if(!img) return;
+    const rect=left.getBoundingClientRect();
+    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    const [ix_before, iy_before] = [(mx - imageTopLeftOnCanvas()[0])/currentScale(),
+                                    (my - imageTopLeftOnCanvas()[1])/currentScale()];
+    const factor=Math.pow(1.1,-Math.sign(e.deltaY));
+    view.zoom=Math.max(0.1,Math.min(5,view.zoom*factor));
+    const [cx_after, cy_after] = [ix_before*currentScale()+imageTopLeftOnCanvas()[0],
+                                  iy_before*currentScale()+imageTopLeftOnCanvas()[1]];
+    view.panX += (mx - cx_after);
+    view.panY += (my - cy_after);
+    zoomEl.value = view.zoom.toFixed(2);
+    zoomVal.textContent = view.zoom.toFixed(2) + '×';
+    drawAll();
+  },{passive:false});
+
+  zoomEl.addEventListener('input', () => {
+    view.zoom = parseFloat(zoomEl.value);
+    zoomVal.textContent = view.zoom.toFixed(2) + '×';
+    drawAll();
+  });
+
+  function updateLabels(){ const {betaDeg}=getParams(); degVal.textContent=betaDeg.toFixed(1)+'°'; }
+  degEl.addEventListener('input',()=>{updateLabels();drawAll();});
+  showDirectEl.addEventListener('change',()=>{drawAll();});
+
+  function onResize(){ lctx=fitCanvasTo(leftPane,left); rctx=fitCanvasTo(rightPane,right); layoutSelectionCircle(); if(img)resetViewToFit(); drawAll(); updateLabels(); }
+  window.addEventListener('resize',onResize);
+
+  layoutSelectionCircle(); updateLabels(); drawAll(); onResize();
+})();
+</script>
+</body>
+</html>
